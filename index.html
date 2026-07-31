@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>信用卡扫码扣款终端</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <style>
+    * { box-sizing: border-box; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+    body { background-color: #0f172a; color: #f8fafc; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    
+    .terminal-card { background: #1e293b; width: 100%; max-width: 440px; padding: 24px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid #334155; }
+    h2 { margin-top: 0; color: #f59e0b; text-align: center; font-size: 20px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+    
+    .form-group { margin-bottom: 16px; }
+    label { font-size: 14px; color: #94a3b8; display: block; margin-bottom: 6px; font-weight: bold; }
+    input { width: 100%; padding: 12px; font-size: 16px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #fff; outline: none; }
+    input:focus { border-color: #38bdf8; }
+    
+    /* 20% 高额利息结算展示框 */
+    .calc-box { background: #291e10; border: 1px dashed #d97706; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+    .calc-row { display: flex; justify-content: space-between; font-size: 14px; color: #cbd5e1; margin-bottom: 6px; }
+    .calc-row.total { font-weight: bold; font-size: 18px; color: #ef4444; border-top: 1px solid #451a03; padding-top: 6px; margin-bottom: 0; }
+    
+    .btn-scan { width: 100%; padding: 14px; font-size: 16px; font-weight: bold; color: white; background: #dc2626; border: none; border-radius: 8px; cursor: pointer; transition: 0.2s; display: flex; justify-content: center; align-items: center; gap: 8px; }
+    .btn-scan:hover { background: #b91c1c; }
+    
+    .manual-box { margin-top: 16px; display: flex; gap: 8px; }
+    .btn-manual { background: #0284c7; color: white; border: none; padding: 0 16px; border-radius: 8px; font-weight: bold; cursor: pointer; white-space: nowrap; }
+    
+    /* 底部提示框 */
+    .msg-banner {
+      margin-top: 16px;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: bold;
+      text-align: left;
+      line-height: 1.5;
+      display: none;
+      animation: fadeIn 0.2s ease-in-out;
+    }
+    .msg-error { background-color: #450a0a; color: #fca5a5; border: 1px solid #991b1b; }
+    .msg-success { background-color: #064e3b; color: #6ee7b7; border: 1px solid #059669; }
+    .msg-info { background-color: #1e3a8a; color: #93c5fd; border: 1px solid #1d4ed8; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* 摄像头画面区 */
+    #scannerModal { display: none; margin-top: 16px; text-align: center; }
+    video { width: 100%; border-radius: 8px; border: 2px solid #38bdf8; }
+  </style>
+</head>
+<body>
+
+  <div class="terminal-card">
+    <h2>💳 信用卡扫码扣款终端</h2>
+    
+    <div class="form-group">
+      <label>1. 消费项目</label>
+      <input type="text" id="itemName" value="午饭" placeholder="请输入消费名称" />
+    </div>
+
+    <div class="form-group">
+      <label>2. 商品原价 ($)</label>
+      <input type="number" id="basePrice" value="16" oninput="calculateTotal()" placeholder="0.00" />
+    </div>
+
+    <!-- 20% 利息计算板 -->
+    <div class="calc-box">
+      <div class="calc-row">
+        <span>商品原价:</span>
+        <span id="showBase">$16.00</span>
+      </div>
+      <div class="calc-row" style="color: #f59e0b;">
+        <span>💳 20% 信用卡高额利息:</span>
+        <span id="showInterest">+$3.20</span>
+      </div>
+      <div class="calc-row total">
+        <span>实扣额度总额:</span>
+        <span id="showTotal">$19.20</span>
+      </div>
+    </div>
+
+    <button class="btn-scan" onclick="startScanner()">📷 开启摄像头扫码刷卡</button>
+
+    <div style="text-align: center; font-size: 12px; color: #64748b; margin-top: 12px;">— 或者手动输入卡号 —</div>
+
+    <div class="manual-box">
+      <input type="text" id="manualCardId" placeholder="粘贴 CREDIT_ 卡号" />
+      <button class="btn-manual" onclick="processPayment(document.getElementById('manualCardId').value.trim())">扣款</button>
+    </div>
+
+    <!-- 提示消息区 -->
+    <div id="msgBanner" class="msg-banner"></div>
+
+    <!-- 摄像头画面区 -->
+    <div id="scannerModal">
+      <p style="color:#38bdf8; font-size:14px; margin-bottom:8px;">📷 请将信用卡二维码对准摄像头</p>
+      <video id="video" playsinline></video>
+      <button onclick="stopScanner()" style="margin-top:8px; background:#64748b; color:white; border:none; padding:6px 12px; border-radius:6px; cursor:pointer;">关闭摄像头</button>
+    </div>
+  </div>
+
+  <script>
+    const SUPABASE_URL = "https://aopjdurrflubhzuyzqhr.supabase.co";
+    const SUPABASE_ANON_KEY = "sb_publishable_VotkA4ftQ2bQGp8jvkA_xg_QUBBY3N7";
+    const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    let videoStream = null;
+    let scanning = false;
+
+    // ⚡ 性能优化 1: 全局复用 Canvas 图像解析器，并开启 GPU/频繁读取读取加速
+    const scanCanvas = document.createElement("canvas");
+    const scanCtx = scanCanvas.getContext("2d", { willReadFrequently: true });
+
+    function calculateTotal() {
+      const base = parseFloat(document.getElementById('basePrice').value) || 0;
+      const interest = base * 0.20;
+      const total = base + interest;
+
+      document.getElementById('showBase').innerText = '$' + base.toFixed(2);
+      document.getElementById('showInterest').innerText = '+$' + interest.toFixed(2);
+      document.getElementById('showTotal').innerText = '$' + total.toFixed(2);
+      
+      return { base, interest, total };
+    }
+
+    function showMessage(text, type = 'error') {
+      const banner = document.getElementById('msgBanner');
+      banner.className = 'msg-banner msg-' + type;
+      banner.innerHTML = text;
+      banner.style.display = 'block';
+    }
+
+    function hideMessage() {
+      document.getElementById('msgBanner').style.display = 'none';
+    }
+
+    async function processPayment(cardId) {
+      hideMessage();
+
+      const item = document.getElementById('itemName').value.trim();
+      const { base, interest, total } = calculateTotal();
+
+      if (!item) return showMessage("⚠️ 请输入消费项目名称！", 'error');
+      if (base <= 0) return showMessage("⚠️ 请输入正确的商品原价！", 'error');
+      if (!cardId) return showMessage("⚠️ 请输入或扫描信用卡号！", 'error');
+
+      // ⚡ 提示“处理中”，提高用户界面感知速度
+      showMessage("⏳ 正在处理扣款中，请稍候...", 'info');
+
+      try {
+        // 1. 查询信用卡持卡人数据 (精简查询字段)
+        const { data: card, error: fetchErr } = await db
+          .from('credit_cards')
+          .select('student_name, group_name, balance')
+          .eq('card_id', cardId)
+          .single();
+
+        if (fetchErr || !card) {
+          showMessage("❌ 扣款失败：找不到该信用卡或卡号无效！", 'error');
+          return;
+        }
+
+        // 2. 检查额度是否足够
+        if (card.balance < total) {
+          showMessage(`🚨 刷卡失败！额度不足！<br>• 当前可用额度: <b>$${card.balance.toFixed(2)}</b><br>• 本次需支付(含利息): <b>$${total.toFixed(2)}</b>`, 'error');
+          return;
+        }
+
+        const newBalance = card.balance - total;
+
+        // ⚡ 性能优化 2: 并发（同时）进行“扣除余额”和“记录流水”，减少 1 次网络请求等待时间
+        const [updateRes, txRes] = await Promise.all([
+          db.from('credit_cards')
+            .update({ balance: newBalance })
+            .eq('card_id', cardId),
+            
+          db.from('credit_transactions')
+            .insert([{
+              card_id: cardId,
+              student_name: card.student_name,
+              group_name: card.group_name,
+              item: item,
+              original_amount: base,
+              interest_amount: interest,
+              total_charged: total
+            }])
+        ]);
+
+        if (updateRes.error) {
+          showMessage("❌ 扣款失败: " + updateRes.error.message, 'error');
+          return;
+        }
+
+        if (txRes.error) {
+          console.warn("流水记录延迟/提醒:", txRes.error.message);
+        }
+
+        // 3. 快速提示刷卡成功
+        showMessage(`✅ 刷卡成功！<br>• 持卡人: <b>${card.student_name} (${card.group_name})</b><br>• 消费项目: ${item}<br>• 本次扣除: $${total.toFixed(2)} (含20%利息)<br>• 剩余可用额度: <b>$${newBalance.toFixed(2)}</b>`, 'success');
+
+      } catch (err) {
+        showMessage("❌ 系统错误: " + err.message, 'error');
+      }
+    }
+
+    function startScanner() {
+      hideMessage();
+      const modal = document.getElementById('scannerModal');
+      const video = document.getElementById('video');
+      modal.style.display = 'block';
+
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }).then(stream => {
+        videoStream = stream;
+        video.srcObject = stream;
+        video.setAttribute("playsinline", true);
+        video.play();
+        scanning = true;
+        requestAnimationFrame(tick);
+      }).catch(err => {
+        showMessage("⚠️ 无法开启摄像头: " + err.message, 'error');
+      });
+    }
+
+    function stopScanner() {
+      scanning = false;
+      if (videoStream) {
+        videoStream.getTracks().forEach(track => track.stop());
+      }
+      document.getElementById('scannerModal').style.display = 'none';
+    }
+
+    function tick() {
+      if (!scanning) return;
+      const video = document.getElementById('video');
+      
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        // ⚡ 复用外部定义好的 scanCanvas，不再重新创建 DOM 节点
+        scanCanvas.width = video.videoWidth;
+        scanCanvas.height = video.videoHeight;
+        scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
+        
+        const imageData = scanCtx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+        if (code && code.data) {
+          stopScanner();
+          processPayment(code.data.trim());
+          return;
+        }
+      }
+      requestAnimationFrame(tick);
+    }
+  </script>
+</body>
+</html>
